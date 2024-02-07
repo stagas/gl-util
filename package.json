@@ -1,0 +1,15 @@
+{
+  "name": "gl-util",
+  "author": "stagas",
+  "version": "1.0.0",
+  "description": "WebGL utilities library",
+  "license": "AGPLv3",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "echo ok"
+  },
+  "devDependencies": {
+    "ambient-dts": "github:stagas/ambient-dts"
+  }
+}
