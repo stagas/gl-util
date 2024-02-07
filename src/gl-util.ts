@@ -31,6 +31,7 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
       const uniform = gl.getUniformLocation(program, name)
       if (uniform == null) {
         // We only warn and not throw because WebGL will silently ignore assignments to null locations.
+        // TODO: maybe throw
         console.warn('Uniform not found or not in use:', name)
       }
       return uniform
