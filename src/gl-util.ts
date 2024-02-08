@@ -21,7 +21,6 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
   gl.depthMask(false)
   gl.enable(gl.BLEND)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-  gl.enable(gl.SCISSOR_TEST)
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
   let program: WebGLProgram
