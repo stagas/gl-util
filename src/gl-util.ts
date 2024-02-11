@@ -1,14 +1,49 @@
 import glReset from '../vendor/gl-reset.js'
 
-type GLBufferTarget = Parameters<WebGL2RenderingContext['bindBuffer']>[0]
-type GLTextureTarget = Parameters<WebGL2RenderingContext['bindTexture']>[0]
-type GLBufferData = Parameters<WebGL2RenderingContext['bufferData']>[1]
-type GLBufferUsage = Parameters<WebGL2RenderingContext['bufferData']>[2]
-export type GLBuffer = { target: GLBufferTarget, buffer: WebGLBuffer, usage: GLBufferUsage, dispose: () => void }
-export type GLTexture = { target: GLTextureTarget, uniform: WebGLUniformLocation, texture: WebGLTexture, dispose: () => void }
+export type GLAttribFn<T, U extends GLBufferData | undefined> = (attrib: number, target: T, usage: GLBufferUsage) => U
+export type GLAttribParam<T, U extends GLBufferData | undefined> = [
+  target: T,
+  attribFn: GLAttribFn<T, U>,
+  usage?: GLBufferUsage
+]
+export type GLBufferTarget = Parameters<WebGL2RenderingContext['bindBuffer']>[0]
+export type GLTextureTarget = Parameters<WebGL2RenderingContext['bindTexture']>[0]
+export type GLBufferData = Parameters<WebGL2RenderingContext['bufferData']>[1]
+export type GLBufferUsage = Parameters<WebGL2RenderingContext['bufferData']>[2]
+export type GLBuffer<T extends GLBufferData | undefined = GLBufferData> = {
+  target: GLBufferTarget
+  usage: GLBufferUsage
+  buffer: WebGLBuffer
+  data: T
+  ptr: number
+  dispose: () => void
+}
+export type GLTexture = {
+  target: GLTextureTarget
+  uniform: WebGLUniformLocation
+  texture: WebGLTexture
+  dispose: () => void
+}
 export type GLShaders = { vertex: WebGLShader, fragment: WebGLShader }
 
 export type GL = ReturnType<typeof initGL>
+
+export const typedArrayConstructors = [
+  Uint8Array,
+  Uint16Array,
+  Uint32Array,
+  BigUint64Array,
+  Int8Array,
+  Int16Array,
+  Int32Array,
+  BigInt64Array,
+  Float32Array,
+  Float64Array,
+]
+
+export type TypedArrayConstructor = typeof typedArrayConstructors[0]
+
+export type TypedArray<T extends TypedArrayConstructor> = InstanceType<T>
 
 export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttributes = {}) {
   const gl = canvas.getContext('webgl2', options)!
@@ -23,11 +58,12 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
 
-  let program: WebGLProgram
+  let currentProgram: WebGLProgram
+  let currentVao: WebGLVertexArrayObject
 
   const uniforms = new Proxy({}, {
     get(_, name: string) {
-      const uniform = gl.getUniformLocation(program, name)
+      const uniform = gl.getUniformLocation(currentProgram, name)
       if (uniform == null) {
         // We only warn and not throw because WebGL will silently ignore assignments to null locations.
         // TODO: maybe throw
@@ -47,24 +83,32 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
     return program
   }
 
-  function useProgram(webglProgram: WebGLProgram) {
-    gl.useProgram(program = webglProgram)
+  function useProgram(program: WebGLProgram) {
+    if (program !== currentProgram) {
+      gl.useProgram(currentProgram = program)
+    }
+  }
+
+  function useVao(vao: WebGLVertexArrayObject) {
+    if (vao !== currentVao) {
+      gl.bindVertexArray(currentVao = vao)
+    }
   }
 
   function use(webglProgram: WebGLProgram, vao: WebGLVertexArrayObject) {
-    gl.useProgram(program = webglProgram)
-    gl.bindVertexArray(vao)
+    useProgram(webglProgram)
+    useVao(vao)
   }
 
-  function createShader(type: Parameters<WebGL2RenderingContext['createShader']>[0], src: string) {
+  function createShader(type: Parameters<WebGL2RenderingContext['createShader']>[0], src: string | ((gl: WebGL2RenderingContext) => string)) {
     const shader = gl.createShader(type)!
-    gl.shaderSource(shader, src.trim())
+    gl.shaderSource(shader, (typeof src === 'function' ? src(gl) : src).trim())
     gl.compileShader(shader)
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader)!)
     return shader
   }
 
-  function createShaders(src: { vertex: string, fragment: string }): GLShaders {
+  function createShaders(src: { vertex: string | ((gl: WebGL2RenderingContext) => string), fragment: string | ((gl: WebGL2RenderingContext) => string) }): GLShaders {
     return {
       vertex: createShader(gl.VERTEX_SHADER, src.vertex),
       fragment: createShader(gl.FRAGMENT_SHADER, src.fragment),
@@ -77,44 +121,54 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
   }
 
   function bindVertexAttribBuffer<T extends Parameters<WebGL2RenderingContext['bindBuffer']>[0]>(target: T, buffer: WebGLBuffer, name: string) {
-    const index = gl.getAttribLocation(program, name)!
+    const index = gl.getAttribLocation(currentProgram, name)
+    if (index === -1) {
+      console.warn('Attribute not found or not in use:', name)
+      return
+    }
     gl.bindBuffer(target, buffer)
-    gl.bindAttribLocation(program, index, name)
+    gl.bindAttribLocation(currentProgram, index, name)
     gl.enableVertexAttribArray(index)
     return index
   }
 
-  function addVertexAttrib<T extends GLBufferTarget>(
+  function addVertexAttrib<T extends GLBufferTarget, U extends undefined | GLBufferData>(
     target: T,
     name: string,
-    attribFn: (attrib: number, target: T) => void
+    attribFn: GLAttribFn<T, U>,
+    usage?: GLBufferUsage
   ) {
     const buffer = gl.createBuffer()!
+    using _ = useBuffer(target, buffer)
     const index = bindVertexAttribBuffer(target, buffer, name)
-    attribFn(index, target)
-    gl.bindBuffer(target, null)
-    return buffer
+    if (index == null) return { buffer }
+    const data = attribFn(index, target, usage ?? gl.STATIC_DRAW)
+    return { buffer, data }
   }
 
   function addVertexAttribs<
     T extends GLBufferTarget,
     U extends Record<string, [
       target: T,
-      attribFn: (attrib: number, target: T) => void,
+      attribFn: GLAttribFn<T, V>,
       usage?: GLBufferUsage
-    ]>>(
-      attribs: {
-        [K in keyof U]: U[K]
-      }
-    ): {
-      [K in keyof U]: GLBuffer
+    ]>,
+    V extends undefined | GLBufferData
+  >(
+    attribs: {
+      [K in keyof U]: U[K]
+    }
+  ): {
+      [K in keyof U]: GLBuffer<ReturnType<U[K][1]>>
     } {
-    const vertexAttribsBuffers: Record<string, GLBuffer> = {}
+    const vertexAttribsBuffers: Record<string, GLBuffer<any>> = {}
     for (const [name, [target, attribFn, usage = gl.STATIC_DRAW]] of Object.entries(attribs)) {
-      const buffer = addVertexAttrib(target, name, attribFn)
+      const { buffer, data } = addVertexAttrib(target, name, attribFn, usage)
       vertexAttribsBuffers[name] = {
         target,
         buffer,
+        data,
+        ptr: data?.byteOffset ?? 0,
         usage,
         dispose: () => {
           gl.deleteBuffer(buffer)
@@ -122,6 +176,24 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
       }
     }
     return vertexAttribsBuffers as any
+  }
+
+  const bufferDisposables = {
+    [gl.ARRAY_BUFFER]: {
+      [Symbol.dispose]() {
+        gl.bindBuffer(gl.ARRAY_BUFFER, null)
+      }
+    }
+  } as Record<number, Disposable>
+
+  function useBuffer<T extends GLBufferTarget>(target: T, buffer: WebGLBuffer) {
+    gl.bindBuffer(target, buffer)
+    return bufferDisposables[target]
+  }
+
+  function useArrayBuffer(buffer: WebGLBuffer) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    return bufferDisposables[gl.ARRAY_BUFFER]
   }
 
   const TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
@@ -177,9 +249,62 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
     gl.bufferData(buffer.target, data, usage ?? buffer.usage)
   }
 
-  function deleteAttribs(attribs: Record<string, GLBuffer>) {
+  function deleteAttribs(attribs: Record<string, GLBuffer<any>>) {
     for (const attrib of Object.values(attribs)) {
       attrib.dispose()
+    }
+  }
+
+  function bufferSubData({ buffer, target }: GLBuffer, data: GLBufferData, offset: number = 0) {
+    using _ = useBuffer(target, buffer)
+    gl.bufferSubData(target, offset, data)
+  }
+
+  function writeAttribRange(attrib: GLBuffer<any>, range: { begin: number, end: number, count: number }) {
+    const r = range
+    const index = r.begin << 2
+    const length = r.count << 2
+    const begin = index
+    const end = index + length
+    // TODO: memoize subarrays
+    bufferSubData(attrib, attrib.data.subarray(begin, end))
+  }
+
+  const typedCtorToGLTypeMap = new Map<TypedArrayConstructor, GLenum>([
+    [Float32Array, gl.FLOAT],
+    [Int32Array, gl.INT],
+  ])
+
+  const intPointerTypes = new Set<TypedArrayConstructor>([Int32Array])
+
+  function attrib<
+    T extends GLBufferTarget,
+    U extends TypedArray<V>,
+    V extends TypedArrayConstructor,
+  >(size: number, data: U, divisor?: number): GLAttribFn<T, U>
+  function attrib<
+    T extends GLBufferTarget,
+    U extends TypedArray<V>,
+    V extends TypedArrayConstructor,
+  >(size: number, fn: () => U, divisor?: number): GLAttribFn<T, U>
+  function attrib<
+    T extends GLBufferTarget,
+    U extends TypedArray<V>,
+    V extends TypedArrayConstructor,
+  >(size: number, fnOrData: U | (() => U), divisor: number = 0): GLAttribFn<T, U> {
+    return (index, target: T, usage) => {
+      const data = typeof fnOrData === 'function' ? fnOrData() : fnOrData
+      gl.bufferData(target, data.length * data.BYTES_PER_ELEMENT, usage)
+      gl.bufferData(target, data, usage)
+      if (divisor) gl.vertexAttribDivisor(index, divisor)
+      const type = typedCtorToGLTypeMap.get(data.constructor as V)!
+      if (intPointerTypes.has(data.constructor as V)) {
+        gl.vertexAttribIPointer(index, size, type, 0, 0)
+      }
+      else {
+        gl.vertexAttribPointer(index, size, type, false, 0, 0)
+      }
+      return data
     }
   }
 
@@ -201,6 +326,12 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
     reset,
     uniforms,
     useProgram,
+    useVao,
+    useBuffer,
+    useArrayBuffer,
+    bufferSubData,
+    attrib,
+    writeAttribRange,
     use,
   }
 }
