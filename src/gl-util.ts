@@ -260,14 +260,25 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
     gl.bufferSubData(target, offset, data)
   }
 
-  function writeAttribRange(attrib: GLBuffer<any>, range: { begin: number, end: number, count: number }) {
+  const memoized = new WeakMap<GLBuffer, Map<number, TypedArray<any>>>()
+  function getDataRange(attrib: GLBuffer<any>, range: { begin: number, end: number, count: number }) {
     const r = range
     const index = r.begin << 2
     const length = r.count << 2
     const begin = index
     const end = index + length
-    // TODO: memoize subarrays
-    bufferSubData(attrib, attrib.data.subarray(begin, end))
+
+    const PRIME = 31
+    const hash = begin * PRIME + end
+    let mem = memoized.get(attrib)
+    if (!mem) memoized.set(attrib, mem = new Map)
+    let subarray = mem.get(hash)
+    if (!subarray) mem.set(hash, subarray = attrib.data.subarray(begin, end))
+    return subarray
+  }
+
+  function writeAttribRange(attrib: GLBuffer<any>, range: { begin: number, end: number, count: number }) {
+    bufferSubData(attrib, getDataRange(attrib, range))
   }
 
   const typedCtorToGLTypeMap = new Map<TypedArrayConstructor, GLenum>([
