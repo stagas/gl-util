@@ -52,6 +52,7 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
   gl.getExtension('OES_texture_float_linear')
   gl.getExtension('OES_standard_derivatives')
   gl.enable(gl.DEPTH_TEST)
+  gl.enable(gl.SCISSOR_TEST)
   gl.depthFunc(gl.LESS)
   gl.depthMask(false)
   gl.enable(gl.BLEND)
@@ -326,6 +327,7 @@ export function initGL(canvas: HTMLCanvasElement, options: WebGLContextAttribute
     attrib,
     bindVertexAttribBuffer,
     bufferSubData,
+    canvas,
     createProgram,
     createShader,
     createShaders,
